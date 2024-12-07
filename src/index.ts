@@ -1,35 +1,57 @@
-import path from 'path';
-import express from 'express';
-import { Configuration, Provider } from 'oidc-provider';
+import path from "path";
+import Express from "express"
+import { migrate } from "drizzle-orm/postgres-js/migrator";
+import { db, DbUser } from "./db";
+import passport from "passport";
+import { addTrpc } from "./appRouter";
+import { userTable } from "./schema";
+import { eq } from "drizzle-orm";
+import { sendAuthCookies } from "./createAuthTokens";
 
-const app = express(); 
+const { Strategy: GoogleStrategy } = require('passport-google-oauth20');
 
-app.use(express.static(__dirname + '/public'));
+async function main() {
+  await migrate(db, {migrationsFolder: path.join(__dirname, "../drizzle")})
 
-app.set('views', path.join(__dirname, 'views'));
-app.set('view engine', 'ejs');
+  const app = Express()
 
+  addTrpc(app)
 
+  app.use(passport.initialize())
 
-const configuration: Configuration = {
-  clients: [
-    {
-      client_id: process.env.GOOGLE_CLIENT_ID as string,
-      client_secret: process.env.GOOGLE_SECRET,
-      grant_types: ['authorization_code'],
-      redirect_uris: ['http://localhost:8080/auth/login/callback'],
-      response_types: ['code'],
-    },
-  ],
-  pkce: {
-    required: () => false,
-  },
-};
+  passport.use(
+    new GoogleStrategy (
+      {clientId: process.env.GOOGLE_CLIENT_ID!,
+        clientSecret: process.env.GOOGLE_SECRET!,
+        callbackUrl: `${process.env.NEXT_PUBLIC_API_URL}/auth/google/callback`,
+        scope: ["identify"]
+      },
 
-const oidc = new Provider('http://localhost:3000', configuration);
+      async (_accessToken: any, _refreshToken: any, profile: { _json: { id: string; }; }, done: (arg0: null, arg1: { id: string; googleId: string; refreshToken: number | null; }) => void) => {
+        // scrap id from received object
+        const googleId = profile._json.id as string 
+      
+        let user = await db.query.users.findFirst({where: eq(userTable.googleId, googleId)})
+      
 
-app.use('/oidc', oidc.callback());
+        if (!user) {
+          [user] = await db.insert(userTable).values({googleId: googleId}).returning()
+        }
+        done(null, user)
+      }
+    )
+  )
 
-app.listen(3000, () => {
-  console.log('\n\tlisten on port 3000');
-});
+  app.get("/auth/google", passport.authenticate("google", {session: false}))
+
+  app.get("/auth/google/callback", passport.authenticate("google", {session: false,}), (req, res) => {
+    sendAuthCookies(res, req.user as DbUser);
+    res.redirect(process.env.FRONTEND_URL!)
+  })
+
+  app.listen(process.env.PORT, () => {
+    console.log("server is listening at http://localhost:4000")
+  })
+}
+
+main()

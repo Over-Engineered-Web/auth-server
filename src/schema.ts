@@ -7,7 +7,7 @@ export const userTable = pgTable('users', {
     .default(sql`uuid_generate_v4()`)
     .notNull(),
 
-  googleId: text('google_id').notNull(),
+  discordId: text('discord_id').notNull(),
   refreshToken: integer('refresh_token_version'),
 
   // name: text("name"),

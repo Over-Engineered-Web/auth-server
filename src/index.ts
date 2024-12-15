@@ -1,57 +1,75 @@
-import path from "path";
-import Express from "express"
-import { migrate } from "drizzle-orm/postgres-js/migrator";
-import { db, DbUser } from "./db";
-import passport from "passport";
-import { addTrpc } from "./appRouter";
-import { userTable } from "./schema";
-import { eq } from "drizzle-orm";
-import { sendAuthCookies } from "./createAuthTokens";
+import { config } from 'dotenv';
+import Express from 'express';
+import passport from 'passport';
+import { Strategy } from 'passport-discord-auth';
+import { DbUser, db } from './db';
+import { eq } from 'drizzle-orm';
+import { userTable } from './schema';
+import { sendAuthCookies } from './createAuthTokens';
+import { addTrpc } from './appRouter';
 
-const { Strategy: GoogleStrategy } = require('passport-google-oauth20');
+config({ path: '.env' });
 
 async function main() {
-  await migrate(db, {migrationsFolder: path.join(__dirname, "../drizzle")})
+  const app = Express();
 
-  const app = Express()
 
-  addTrpc(app)
+  addTrpc(app);
 
-  app.use(passport.initialize())
+  app.use(passport.initialize() as any);
 
   passport.use(
-    new GoogleStrategy (
-      {clientId: process.env.GOOGLE_CLIENT_ID!,
-        clientSecret: process.env.GOOGLE_SECRET!,
-        callbackUrl: `${process.env.NEXT_PUBLIC_API_URL}/auth/google/callback`,
-        scope: ["identify"]
+    new Strategy(
+      {
+        clientId: process.env.DISCORD_CLIENT_ID!,
+        clientSecret: process.env.DISCORD_SECRET!,
+        callbackUrl: `${process.env.API_URL}/auth/discord/callback`,
+        scope: ['identify'],
       },
 
-      async (_accessToken: any, _refreshToken: any, profile: { _json: { id: string; }; }, done: (arg0: null, arg1: { id: string; googleId: string; refreshToken: number | null; }) => void) => {
-        // scrap id from received object
-        const googleId = profile._json.id as string 
-      
-        let user = await db.query.users.findFirst({where: eq(userTable.googleId, googleId)})
-      
+      async (_accessToken, _refreshToken, profile, done) => {
+        // 1. grab id
+        const discordId = profile._json.id as string;
 
+        // 2. db lookup
+        let user = await db.query.users.findFirst({
+          where: eq(userTable.discordId, discordId),
+        });
+
+        // 3. create user if not exists
         if (!user) {
-          [user] = await db.insert(userTable).values({googleId: googleId}).returning()
+          [user] = await db
+            .insert(userTable)
+            .values({
+              discordId,
+            })
+            .returning();
         }
-        done(null, user)
+
+        // 4. return user
+        done(null, user);
       }
-    )
-  )
+    ) as any
+  );
 
-  app.get("/auth/google", passport.authenticate("google", {session: false}))
+  app.get(
+    '/auth/discord',
+    passport.authenticate('discord', { session: false })
+  );
+  app.get(
+    '/auth/discord/callback',
+    passport.authenticate('discord', {
+      session: false,
+    }),
+    (req, res) => {
+      sendAuthCookies(res, req.user as DbUser);
+      res.redirect(process.env.FRONTEND_URL!);
+    }
+  );
 
-  app.get("/auth/google/callback", passport.authenticate("google", {session: false,}), (req, res) => {
-    sendAuthCookies(res, req.user as DbUser);
-    res.redirect(process.env.FRONTEND_URL!)
-  })
-
-  app.listen(process.env.PORT, () => {
-    console.log("server is listening at http://localhost:4000")
-  })
+  app.listen(process.env.PORT || 4000, () => {
+    console.log('Server started at http://localhost:4000');
+  });
 }
 
-main()
+main();

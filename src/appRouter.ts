@@ -1,6 +1,6 @@
 import * as trpcExpress from '@trpc/server/adapters/express';
-import { doThingQuery } from './things/doThing';
-import { meQuery } from './things/me';
+import { doThingQuery } from './modules/doThing';
+import { meQuery } from './modules/me';
 import { createContext, t } from './trpc';
 import { Express } from 'express';
 import cors from 'cors';

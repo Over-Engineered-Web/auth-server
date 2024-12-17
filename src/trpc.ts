@@ -1,34 +1,77 @@
-import { initTRPC, TRPCError } from '@trpc/server';
-import * as trpcExpress from '@trpc/server/adapters/express';
-import { checkTokens, sendAuthCookies } from './createAuthTokens';
+// src/middleware/auth.ts
+import { Request, Response, NextFunction } from 'express';
+import { verifyAuthTokens, setAuthCookies } from './createAuthTokens';
 import { DbUser } from './db';
 
-type Context = Awaited<ReturnType<typeof createContext> & {userId: string; maybeUser?: DbUser}>;
+// Types
+export interface AuthenticatedRequest extends Request {
+  userId: string;
+  user?: DbUser;
+}
 
-export const createContext = ({
-  req,
-  res,
-}: trpcExpress.CreateExpressContextOptions) => 
-  ({ req, res, userId: '' });
+// Middleware to handle public routes
+export const publicRoute = (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  next();
+};
 
-export const t = initTRPC.context<Context>().create();
-export const publicProcedure = t.procedure;
-export const privateProcedure = t.procedure.use(async req => {
-  const { ctx } = req;
-  if (!ctx.req.cookies.id && !ctx.req.cookies.rid) {
-    throw new TRPCError({ code: 'UNAUTHORIZED' });
+// Middleware to handle private routes
+export const privateRoute = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    if (!req.cookies.id && !req.cookies.rid) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { id, rid } = req.cookies;
+
+    const { userId, user } = await verifyAuthTokens(id, rid);
+
+    // Set userId on request
+    req.userId = userId;
+
+    // If we got back a user, set new cookies and attach user to request
+    if (user) {
+      setAuthCookies(res, user);
+      req.user = user;
+    }
+
+    next();
+  } catch (error) {
+    res.status(401).json({ error: 'Unauthorized' });
   }
+};
 
-  const { id, rid } = ctx.req.cookies;
+// Helper for creating route handlers with automatic error handling
+type RouteHandler = (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+) => Promise<void> | void;
 
-  const { userId, user } = await checkTokens(id, rid);
+export const createHandler = (handler: RouteHandler) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      await handler(req as AuthenticatedRequest, res, next);
+    } catch (error) {
+      next(error);
+    }
+  };
+};
 
-  ctx.userId = userId;
-
-  if (user) {
-    sendAuthCookies(ctx.res, user);
-    ctx.maybeUser = user;
-  }
-
-  return req.next(req);
-});
+// Error handling middleware
+export const errorHandler = (
+  error: Error,
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  console.error('Error:', error);
+  res.status(500).json({ error: 'Internal server error' });
+};

@@ -1,89 +1,129 @@
-import { db, DbUser } from './db';
-import * as jwt from 'jsonwebtoken';
+// src/auth/tokens.ts
 import { Response } from 'express';
-import { TRPCError } from '@trpc/server';
+import jwt from 'jsonwebtoken';
+import { db, DbUser } from './db';
 import { userTable } from './schema';
 import { eq } from 'drizzle-orm';
 
-export type RefreshToken = {
+interface RefreshToken {
   userId: string;
   refreshTokenVersion?: number;
-};
+}
 
-export type AccessToken = {
+interface AccessToken {
   userId: string;
+}
+
+const cookieOptions = {
+  httpOnly: true,
+  sameSite: 'lax' as const,
+  path: '/',
+  domain: '',
+  maxAge: 1000 * 60 * 60 * 24 * 365 * 10, // 10 years
 };
 
-const createAuthToken = (
-  user: DbUser
-): { refreshToken: string; accessToken: string } => {
+export function createAuthTokens(user: DbUser): {
+  refreshToken: string;
+  accessToken: string;
+} {
   const refreshToken = jwt.sign(
-    { userId: user.id, refreshToken: user.refreshToken },
-    process.env.REFRESH_TOKEN_SECRET!,
     {
-      expiresIn: '30d',
-    }
+      userId: user.id,
+      refreshTokenVersion: user.refreshToken,
+    },
+    process.env.REFRESH_TOKEN_SECRET!,
+    { expiresIn: '30d' }
   );
 
   const accessToken = jwt.sign(
     { userId: user.id },
     process.env.ACCESS_TOKEN_SECRET!,
-    {
-      expiresIn: '15min',
-    }
+    { expiresIn: '15min' }
   );
 
   return { refreshToken, accessToken };
-};
+}
 
-// TODO cookies
+export function setAuthCookies(res: Response, user: DbUser): void {
+  const { refreshToken, accessToken } = createAuthTokens(user);
+  res.cookie('id', accessToken, cookieOptions);
+  res.cookie('rid', refreshToken, cookieOptions);
+}
 
-const cookieOpts = {
-  httpOnly: true,
-  sameSite: 'lax',
-  path: '/',
-  domain: '',
-  maxAge: 1000 * 60 * 60 * 24 * 365 * 10,
-} as const;
-
-export const sendAuthCookies = (res: Response, user: DbUser) => {
-  const { refreshToken, accessToken } = createAuthToken(user);
-  res.cookie('id', accessToken, cookieOpts);
-  res.cookie('rid', refreshToken, cookieOpts);
-};
-
-export const checkTokens = async (access: string, refresh: string) => {
+export async function verifyAuthTokens(
+  accessToken: string,
+  refreshToken: string
+) {
+  // First try to verify access token
   try {
-    const data = <AccessToken>(
-      jwt.verify(access, process.env.ACCESS_TOKEN_SECRET!)
-    );
+    const data = jwt.verify(
+      accessToken,
+      process.env.ACCESS_TOKEN_SECRET!
+    ) as AccessToken;
 
     return {
       userId: data.userId,
     };
-  } catch {}
-
-  if (!refresh) {
-    throw new TRPCError({ code: 'UNAUTHORIZED' });
-  }
-
-  let data;
-  try {
-    // assign a token from user to variable
-    data = <RefreshToken>jwt.verify(refresh, process.env.REFRESH_TOKEN_SECRET!);
   } catch {
-    throw new TRPCError({ code: 'UNAUTHORIZED' });
+    // Access token invalid, try refresh token
   }
 
-  // take a user with id 
+  // No refresh token provided
+  if (!refreshToken) {
+    throw new Error('Unauthorized');
+  }
+
+  // Verify refresh token
+  let refreshTokenData: RefreshToken;
+  try {
+    refreshTokenData = jwt.verify(
+      refreshToken,
+      process.env.REFRESH_TOKEN_SECRET!
+    ) as RefreshToken;
+  } catch {
+    throw new Error('Unauthorized');
+  }
+
+  // Check if user exists and token version matches
   const user = await db.query.users.findFirst({
-    where: eq(userTable.id, data.userId),
+    where: eq(userTable.id, refreshTokenData.userId),
   });
 
-  if (!user || user.refreshToken !== data.refreshTokenVersion) {
-    throw new TRPCError({ code: 'UNAUTHORIZED' });
+  if (!user || user.refreshToken !== refreshTokenData.refreshTokenVersion) {
+    throw new Error('Unauthorized');
   }
 
-  // after all checks return user
-  return { userId: data.userId, user };
-};
+  return { userId: refreshTokenData.userId, user };
+}
+
+// Middleware to check authentication
+export function requireAuth(
+  requireUser: boolean = false
+): Express.RequestHandler {
+  return async (req, res, next) => {
+    try {
+      const accessToken = req.cookies.id;
+      const refreshToken = req.cookies.rid;
+
+      if (!accessToken && !refreshToken) {
+        throw new Error('Unauthorized');
+      }
+
+      const result = await verifyAuthTokens(accessToken, refreshToken);
+
+      // Add user info to request
+      req.userId = result.userId;
+      if (result.user) {
+        req.user = result.user;
+        // Refresh the auth cookies
+        setAuthCookies(res, result.user);
+      } else if (requireUser) {
+        throw new Error('User required');
+      }
+
+      next();
+    } catch (err) {
+      res.status(401).json({ error: 'Unauthorized' });
+    }
+  };
+}

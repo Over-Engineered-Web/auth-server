@@ -1,13 +1,7 @@
 // src/middleware/auth.ts
-import { Request, Response, NextFunction } from 'express';
+import { Request, Response, NextFunction, RequestHandler } from 'express';
 import { verifyAuthTokens, setAuthCookies } from './createAuthTokens';
 import { DbUser } from './db';
-
-// Types
-export interface AuthenticatedRequest extends Request {
-  userId: string;
-  user?: DbUser;
-}
 
 // Middleware to handle public routes
 export const publicRoute = (
@@ -18,9 +12,14 @@ export const publicRoute = (
   next();
 };
 
+interface AuthRequest extends Request {
+  userId: string;
+  user?: DbUser
+}
+
 // Middleware to handle private routes
 export const privateRoute = async (
-  req: AuthenticatedRequest,
+  req: AuthRequest,
   res: Response,
   next: NextFunction
 ) => {
@@ -49,22 +48,26 @@ export const privateRoute = async (
 };
 
 // Helper for creating route handlers with automatic error handling
-type RouteHandler = (
-  req: AuthenticatedRequest,
+export type RouteHandler = (
+  req: Request,
   res: Response,
   next: NextFunction
 ) => Promise<void> | void;
 
-export const createHandler = (handler: RouteHandler) => {
+export const createHandler = (
+  handler: (
+    req: Request,
+    res: Response
+  ) => Promise<void | Response> | void | Response
+): RequestHandler => {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
-      await handler(req as AuthenticatedRequest, res, next);
+      await handler(req, res);
     } catch (error) {
       next(error);
     }
   };
 };
-
 // Error handling middleware
 export const errorHandler = (
   error: Error,

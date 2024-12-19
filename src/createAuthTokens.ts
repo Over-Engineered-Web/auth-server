@@ -97,10 +97,8 @@ export async function verifyAuthTokens(
 }
 
 // Middleware to check authentication
-export function requireAuth(
-  requireUser: boolean = false
-): Express.RequestHandler {
-  return async (req, res, next) => {
+export function requireAuth(requireUser: boolean = false) {
+  return async ({ req, res, next }: any) => {
     try {
       const accessToken = req.cookies.id;
       const refreshToken = req.cookies.rid;

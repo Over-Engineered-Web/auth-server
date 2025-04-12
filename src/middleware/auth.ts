@@ -2,14 +2,15 @@ import { Request, Response, NextFunction } from 'express';
 import passport from 'passport';
 import { logger } from '../utils/logger';
 import { verifyToken } from '../utils/tokens';
-import User from '../models/User';
+import { IUser } from '../models/User';
 
-// Custom interface to extend Express Request
 declare global {
   namespace Express {
-    interface Request {
-      user?: User;
-    }
+    // Extend the User interface (not Request)
+    interface User extends IUser {}
+
+    // No need to redefine the user property in Request
+    // Express already has: interface Request { user?: User }
   }
 }
 
@@ -50,7 +51,7 @@ export const requireAdmin = (
   req: Request,
   res: Response,
   next: NextFunction
-): void => {
+): void | Response => {
   if (!req.user) {
     return res
       .status(401)
@@ -76,7 +77,7 @@ export const isAuthenticated = (
   req: Request,
   res: Response,
   next: NextFunction
-): void => {
+): void | Response => {
   if (!req.user) {
     return res
       .status(401)
